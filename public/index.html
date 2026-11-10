@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grand Hotel – Room Booking</title>
+<link rel="stylesheet" href="/styles.css"></head><body>
+<nav id="nav" aria-label="Main navigation"></nav><main id="app" tabindex="-1" aria-live="polite"></main><div id="toasts" aria-live="polite" aria-atomic="true"></div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const today = () => new Date().toISOString().slice(0, 10);
+const money = n => '$' + Number(n).toFixed(2);
+const skel = n => '<div class="grid">' + '<div class="card skel"></div>'.repeat(n) + '</div>';
+let me = JSON.parse(localStorage.me || 'null'), tok = localStorage.tok || '', D = { ci: '', co: '' };
+
+function toast(m, bad) { const d = document.createElement('div'); d.className = 'toast' + (bad ? ' bad' : ''); d.textContent = m; $('#toasts').append(d); setTimeout(() => d.remove(), 3500); }
+async function api(p, o = {}) {
+  const raw = o.body instanceof FormData;
+  const r = await fetch('/api' + p, { ...o, headers: { ...(o.body && !raw ? { 'Content-Type': 'application/json' } : {}), ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: o.body && !raw ? JSON.stringify(o.body) : o.body });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Request failed');
+  return j;
+}
+function renderNav() {
+  $('#nav').innerHTML = '<b>Grand Hotel</b><a onclick="home()">Rooms</a>' + (me
+    ? (me.role === 'guest' ? '<a onclick="mine()">My Bookings</a>' : '<a onclick="staff()">Reception</a>') + (me.role === 'admin' ? '<a onclick="admin()">Admin</a>' : '') + `<span>${esc(me.name)} (${me.role})</span><a onclick="logout()">Logout</a>`
+    : '<a onclick="login()">Login / Sign up</a>');
+}
+function logout() { tok = ''; me = null; localStorage.clear(); renderNav(); home(); }
+const reload = () => me.role === 'guest' ? mine() : staff();
+
+function login(mode = 'in') {
+  const up = mode === 'up';
+  $('#app').innerHTML = `<form id="a" class="card b" style="max-width:380px;margin:auto;display:grid;gap:10px"><h2>${up ? 'Create account' : 'Login'}</h2>
+  ${up ? '<input name="name" placeholder="Full name" required minlength="2">' : ''}<input name="email" type="email" placeholder="Email" required>
+  <input name="password" type="password" placeholder="Password" required minlength="6">${up ? '<input name="phone" placeholder="Phone (optional)">' : ''}
+  <button>${up ? 'Sign up' : 'Login'}</button><a onclick="login('${up ? 'in' : 'up'}')">${up ? 'Have an account? Login' : 'New here? Sign up'}</a></form>`;
+  $('#a').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const j = await api('/auth/' + (up ? 'signup' : 'login'), { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      tok = j.token; me = j.user; localStorage.tok = tok; localStorage.me = JSON.stringify(me); renderNav(); toast('Welcome ' + me.name);
+      me.role === 'admin' ? admin() : me.role === 'receptionist' ? staff() : home();
+    } catch (x) { toast(x.message, 1); }
+  };
+}
+
+function card(r) {
+  return `<div class="card">${r.images[0] ? `<img src="${esc(r.images[0])}" alt="Room ${esc(r.number)}">` : '<div class="room-image-fallback" role="img" aria-label="Room photo unavailable">Photo coming soon</div>'}<div class="b"><b>Room ${esc(r.number)} · ${esc(r.type)}</b><br>${money(r.price)} / night · ${r.capacity} guests<br><span class="tag">${r.status}</span> <button class="s" onclick="detail(${r.id})">Details</button></div></div>`;
+}
+async function home() {
+  $('#app').innerHTML = `<h1>Find your room</h1><form id="f" class="bar">
+  <label>Check-in<input type="date" name="check_in" min="${today()}" value="${D.ci}"></label><label>Check-out<input type="date" name="check_out" min="${today()}" value="${D.co}"></label>
+  <label>Type<select name="type"><option value="">Any</option><option>Single</option><option>Double</option><option>Deluxe</option><option>Suite</option></select></label>
+  <label>Min price<input type="number" name="min" min="0" style="width:90px"></label><label>Max price<input type="number" name="max" min="0" style="width:90px"></label>
+  <label>Guests<input type="number" name="capacity" min="1" style="width:80px"></label><button>Search</button></form><div id="res"></div>`;
+  const run = async () => {
+    $('#res').innerHTML = skel(3);
+    try {
+      const p = new URLSearchParams([...new FormData($('#f'))].filter(x => x[1]));
+      const rooms = await api('/rooms?' + p);
+      $('#res').innerHTML = rooms.length ? `<div class="grid">${rooms.map(card).join('')}</div>` : '<p class="empty">No rooms match your search.</p>';
+    } catch (e) { $('#res').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  };
+  $('#f').onsubmit = e => {
+    e.preventDefault(); const v = Object.fromEntries(new FormData(e.target));
+    if (!v.check_in !== !v.check_out) return toast('Select both check-in and check-out dates', 1);
+    if (v.check_in && v.check_in < today()) return toast('Past dates are not allowed', 1);
+    if (v.check_in && v.check_out <= v.check_in) return toast('Check-out must be after check-in', 1);
+    D = { ci: v.check_in, co: v.check_out }; run();
+  };
+  run();
+}
+
+async function detail(id) {
+  $('#app').innerHTML = skel(1);
+  try {
+    const [r, sv] = await Promise.all([api('/rooms/' + id), api('/services')]);
+    $('#app').innerHTML = `<a onclick="home()">← Back to rooms</a><div class="two"><div><h1>Room ${esc(r.number)} · ${esc(r.type)}</h1>
+    <div class="pv">${r.images.map(u => `<img src="${esc(u)}" alt="">`).join('') || '<span class="empty">No photos available yet.</span>'}</div>
+    <p>${money(r.price)} / night · up to ${r.capacity} guests · <span class="tag">${r.status}</span></p><p>${esc(r.amenities)}</p></div>
+    <form id="bk" class="card b" style="display:grid;gap:10px"><span class="eyebrow">YOUR STAY</span><h3>Booking summary</h3>
+    <label>Check-in<input type="date" name="check_in" min="${today()}" value="${D.ci}" required></label>
+    <label>Check-out<input type="date" name="check_out" min="${today()}" value="${D.co}" required></label>
+    <label>Guests<input type="number" name="guests" min="1" max="${r.capacity}" value="1" required></label>
+    ${sv.map(s => `<label style="flex-direction:row;gap:8px"><input type="checkbox" class="sv" value="${s.id}" data-p="${s.price}"> ${esc(s.name)} (${money(s.price)})</label>`).join('')}
+    <div id="sum"></div><button class="btn-primary">Continue to booking</button><p class="muted tiny">You will review the total before confirming. No payment is collected in this demo.</p></form></div>`;
+    const f = $('#bk');
+    const calc = () => {
+      const v = Object.fromEntries(new FormData(f)), n = (new Date(v.check_out) - new Date(v.check_in)) / 864e5;
+      if (!(n > 0)) { $('#sum').textContent = 'Select valid dates to see the price'; return null; }
+      const ex = [...f.querySelectorAll('.sv:checked')].reduce((a, c) => a + +c.dataset.p, 0), sub = r.price * n, tax = (sub + ex) * 0.1;
+      $('#sum').innerHTML = `${n} night(s) × ${money(r.price)} = ${money(sub)}<br>Services: ${money(ex)}<br>Tax (10%): ${money(tax)}<br><b>Total: ${money(sub + ex + tax)}</b>`;
+      return v;
+    };
+    f.oninput = calc; calc();
+    f.onsubmit = async e => {
+      e.preventDefault();
+      if (!me) { toast('Please login to book', 1); return login(); }
+      const v = calc(); if (!v) return toast('Check-out must be after check-in', 1);
+      if (v.check_in < today()) return toast('Past dates are not allowed', 1);
+      try {
+        await api('/bookings', { method: 'POST', body: { room_id: id, check_in: v.check_in, check_out: v.check_out, guests: +v.guests, services: [...f.querySelectorAll('.sv:checked')].map(c => ({ id: +c.value, qty: 1 })) } });
+        toast('Booking confirmed!'); mine();
+      } catch (x) { toast(x.message, 1); }
+    };
+  } catch (e) { $('#app').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+function table(b, own) {
+  return `<div class="tw"><table><tr><th>#</th><th>Guest</th><th>Room</th><th>Dates</th><th>Total</th><th>Status</th><th></th></tr>${b.map(x => `<tr><td>${x.id}</td><td>${esc(x.guest_name)}</td><td>${esc(x.room_number)} ${esc(x.room_type)}</td><td>${x.check_in} → ${x.check_out}</td><td>${money(x.total)}</td><td><span class="tag">${x.status}</span></td><td>${acts(x, own)}</td></tr>`).join('')}</table></div>`;
+}
+function acts(x, own) {
+  let a = '';
+  if (x.status === 'Confirmed') { a += `<button class="d" onclick="cancelB(${x.id})">Cancel</button> <button class="s" onclick="editB(${x.id},'${x.check_in}','${x.check_out}')">Edit</button> `; if (!own) a += `<button onclick="act(${x.id},'check-in')">Check-in</button>`; }
+  if (x.status === 'CheckedIn' && !own) a += `<button onclick="act(${x.id},'check-out')">Check-out</button>`;
+  if (x.status === 'CheckedOut') a += `<button class="s" onclick="inv(${x.id})">Invoice PDF</button>`;
+  return a;
+}
+async function cancelB(id) { if (!confirm('Cancel this booking?')) return; try { await api('/bookings/' + id, { method: 'DELETE' }); toast('Booking cancelled'); reload(); } catch (e) { toast(e.message, 1); } }
+async function editB(id, ci, co) {
+  const a = prompt('New check-in (YYYY-MM-DD)', ci); if (!a) return; const b = prompt('New check-out (YYYY-MM-DD)', co); if (!b) return;
+  try { await api('/bookings/' + id, { method: 'PUT', body: { check_in: a, check_out: b } }); toast('Booking updated'); reload(); } catch (e) { toast(e.message, 1); }
+}
+async function act(id, what) { try { await api(`/bookings/${id}/${what}`, { method: 'POST' }); toast('Done: ' + what); staff(); } catch (e) { toast(e.message, 1); } }
+async function inv(id) {
+  try {
+    const r = await fetch(`/api/bookings/${id}/invoice`, { headers: { Authorization: 'Bearer ' + tok } });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = `invoice-${id}.pdf`; a.click();
+  } catch (e) { toast(e.message, 1); }
+}
+
+async function mine() {
+  if (!me) return login();
+  $('#app').innerHTML = '<h1>My bookings</h1>' + skel(2);
+  try { const b = await api('/bookings/mine'); $('#app').innerHTML = '<h1>My bookings</h1>' + (b.length ? table(b, true) : '<section class="empty-state"><div class="empty-icon">⌂</div><h3>No bookings yet</h3><p>Your next stay is waiting. Explore our rooms and find the right space for you.</p><button class="s" onclick="home()">Explore rooms</button></section>'); }
+  catch (e) { $('#app').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function staff() {
+  if (!me || me.role === 'guest') return login();
+  $('#app').innerHTML = '<h1>Reception panel</h1>' + skel(2);
+  try {
+    const [b, rooms] = await Promise.all([api('/bookings'), api('/rooms')]);
+    $('#app').innerHTML = `<h1>Reception panel</h1><h3>Walk-in booking</h3><form id="w" class="bar">
+    <input name="guest_name" placeholder="Guest name" required minlength="2"><input name="guest_email" type="email" placeholder="Guest email" required>
+    <select name="room_id">${rooms.map(r => `<option value="${r.id}">${esc(r.number)} ${esc(r.type)}</option>`).join('')}</select>
+    <input type="date" name="check_in" min="${today()}" required><input type="date" name="check_out" min="${today()}" required>
+    <input type="number" name="guests" min="1" value="1" style="width:70px" required><button>Book</button></form>
+    <h3>Bookings</h3>${b.length ? table(b, false) : '<p class="empty">No bookings yet.</p>'}
+    <h3>Room status</h3><div class="tw"><table><tr><th>Room</th><th>Status</th><th>Set status</th></tr>${rooms.map(r => `<tr><td>${esc(r.number)} ${esc(r.type)}</td><td><span class="tag">${r.status}</span></td><td><select onchange="setSt(${r.id},this.value)"><option value="">Change…</option><option>Available</option><option>Cleaning</option><option>Maintenance</option><option>Occupied</option></select></td></tr>`).join('')}</table></div>`;
+    $('#w').onsubmit = async e => {
+      e.preventDefault(); const v = Object.fromEntries(new FormData(e.target));
+      if (v.check_in < today()) return toast('Past dates are not allowed', 1);
+      if (v.check_out <= v.check_in) return toast('Check-out must be after check-in', 1);
+      try { await api('/bookings', { method: 'POST', body: { ...v, room_id: +v.room_id, guests: +v.guests } }); toast('Walk-in booked'); staff(); } catch (x) { toast(x.message, 1); }
+    };
+  } catch (e) { $('#app').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+async function setSt(id, status) { if (!status) return; try { await api(`/rooms/${id}/status`, { method: 'PATCH', body: { status } }); toast('Room status updated'); me.role === 'admin' ? admin() : staff(); } catch (e) { toast(e.message, 1); } }
+
+const ch = {};
+function draw(id, type, labels, data, label) { ch[id]?.destroy(); ch[id] = new Chart($('#' + id), { type, data: { labels, datasets: [{ label, data, backgroundColor: '#c8963e', borderColor: '#1f2a44' }] }, options: { responsive: true } }); }
+async function loadStats(from, to) {
+  try {
+    const s = await api(`/admin/stats?from=${from}&to=${to}`);
+    draw('c1', 'line', s.occupancy.map(x => x.date), s.occupancy.map(x => x.rate), 'Occupancy %');
+    draw('c2', 'bar', s.revenue.map(x => x.month), s.revenue.map(x => x.revenue), 'Revenue ($)');
+    draw('c3', 'bar', s.byType.map(x => x.type), s.byType.map(x => x.count), 'Bookings');
+  } catch (e) { toast(e.message, 1); }
+}
+async function admin() {
+  if (!me || me.role !== 'admin') return login();
+  $('#app').innerHTML = '<h1>Admin dashboard</h1>' + skel(2);
+  try {
+    const [rooms, svc, users] = await Promise.all([api('/rooms'), api('/services'), api('/admin/users')]);
+    const d = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+    $('#app').innerHTML = `<h1>Admin dashboard</h1>
+    <form id="sf" class="bar"><label>From<input type="date" name="from" value="${d(-30)}"></label><label>To<input type="date" name="to" value="${d(30)}"></label><button>Apply range</button></form>
+    <div class="charts"><div class="card b"><canvas id="c1"></canvas></div><div class="card b"><canvas id="c2"></canvas></div><div class="card b"><canvas id="c3"></canvas></div></div>
+    <h3>Add room</h3><form id="rf" class="bar"><input name="number" placeholder="Room no" required><select name="type"><option>Single</option><option>Double</option><option>Deluxe</option><option>Suite</option></select>
+    <input name="price" type="number" min="1" step="0.01" placeholder="Price" required><input name="capacity" type="number" min="1" placeholder="Capacity" required><input name="amenities" placeholder="WiFi, TV">
+    <input type="file" id="im" accept="image/jpeg,image/png,image/webp" multiple><button>Add room</button></form><div class="pv" id="pv"></div>
+    <div class="tw"><table><tr><th>Room</th><th>Price</th><th>Cap.</th><th>Status</th><th></th></tr>${rooms.map(r => `<tr><td>${esc(r.number)} ${esc(r.type)}</td><td>${money(r.price)}</td><td>${r.capacity}</td><td>${r.status}</td><td><button class="d" onclick="del('/rooms/${r.id}')">Delete</button></td></tr>`).join('')}</table></div>
+    <h3>Services</h3><form id="vf" class="bar"><input name="name" placeholder="Service name" required><input name="price" type="number" min="1" step="0.01" placeholder="Price" required><button>Add service</button></form>
+    <div class="tw"><table>${svc.map(s => `<tr><td>${esc(s.name)}</td><td>${money(s.price)}</td><td><button class="d" onclick="del('/services/${s.id}')">Delete</button></td></tr>`).join('')}</table></div>
+    <h3>Users &amp; staff</h3><form id="uf" class="bar"><input name="name" placeholder="Name" required minlength="2"><input name="email" type="email" placeholder="Email" required><input name="password" type="password" minlength="6" placeholder="Password" required>
+    <select name="role"><option>receptionist</option><option>admin</option><option>guest</option></select><button>Add user</button></form>
+    <div class="tw"><table><tr><th>Name</th><th>Email</th><th>Role</th><th>Bookings</th><th></th></tr>${users.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${u.role}</td><td>${u.bookings}</td><td><button class="d" onclick="del('/admin/users/${u.id}')">Delete</button></td></tr>`).join('')}</table></div>`;
+    $('#sf').onsubmit = e => { e.preventDefault(); const v = Object.fromEntries(new FormData(e.target)); if (v.to < v.from) return toast('End date must be after start date', 1); loadStats(v.from, v.to); };
+    loadStats(d(-30), d(30));
+    $('#im').onchange = e => {
+      const fs = [...e.target.files], bad = fs.length > 5 ? 'Maximum 5 images' : fs.find(f => !/^image\/(jpeg|png|webp)$/.test(f.type)) ? 'Only JPG, PNG or WEBP allowed' : fs.find(f => f.size > 2 * 1024 * 1024) ? 'Each image must be under 2MB' : '';
+      if (bad) { e.target.value = ''; $('#pv').innerHTML = ''; return toast(bad, 1); }
+      $('#pv').innerHTML = fs.map(f => `<img src="${URL.createObjectURL(f)}" alt="preview">`).join('');
+    };
+    $('#rf').onsubmit = async e => {
+      e.preventDefault(); const v = Object.fromEntries(new FormData(e.target)); delete v.undefined;
+      if (!(+v.price > 0) || !(+v.capacity >= 1)) return toast('Price and capacity must be positive', 1);
+      try {
+        const { id } = await api('/rooms', { method: 'POST', body: { number: v.number, type: v.type, price: v.price, capacity: v.capacity, amenities: v.amenities } });
+        const fl = $('#im').files; if (fl.length) { const fd = new FormData(); [...fl].forEach(f => fd.append('images', f)); await api(`/rooms/${id}/images`, { method: 'POST', body: fd }); }
+        toast('Room added'); admin();
+      } catch (x) { toast(x.message, 1); }
+    };
+    $('#vf').onsubmit = async e => { e.preventDefault(); try { await api('/services', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('Service added'); admin(); } catch (x) { toast(x.message, 1); } };
+    $('#uf').onsubmit = async e => { e.preventDefault(); try { await api('/admin/users', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('User added'); admin(); } catch (x) { toast(x.message, 1); } };
+  } catch (e) { $('#app').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+async function del(path) { if (!confirm('Delete this record?')) return; try { await api(path, { method: 'DELETE' }); toast('Deleted'); admin(); } catch (e) { toast(e.message, 1); } }
+
+renderNav(); home();
+</script></body></html>
