@@ -2,7 +2,7 @@
 
 A responsive hotel reservation and front-desk management application with three roles: guest, receptionist and admin.
 
-**Live URL:** _Add after deployment_ · **Public repository:** _Add GitHub URL_ · **Demo video:** _Add recording URL_
+**Live URL:**  https://rabia-noor11.github.io/hotel-booking-system/ · **Public repository:** https://github.com/Rabia-noor11/hotel-booking-system · 
 
 ## Features
 
